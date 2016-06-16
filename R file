@@ -1,0 +1,353 @@
+library(data.table)
+library(class)
+library(MASS)
+library(ggplot2)
+library(gridExtra)
+library(GGally)
+library(tree)
+library(ROCR)
+
+#Notes:
+#Variables with no numbers (i.e. wine, wine.train, wine.test) >> ALL QUALITIES
+#Variables with number 3 (i.e. wine3, wine3.train, wine3.test) >> 3 FACTORS (High,Med,Low)
+#Variables with number 2 (i.e. wine2, wine2.train, wine2.test) >> 2 FACTORS (High,Low)
+#Wrote this in the order we decided before (all qualities, 3 factors, 2 factors)
+#Simplified comments for my own preference/made it easier to edit, can add more detail after we make sure it all runs smoothly
+#Source: https://archive.ics.uci.edu/ml/datasets/Wine+Quality
+
+wine<-read.csv("WineQuality.csv",sep=";", header=T)
+wine$quality <- as.factor(wine$quality)
+wine<-data.table(wine)
+head(wine)
+dim(wine)
+
+##EDA
+
+#PCP
+
+parcoord16.wine = ggparcoord(data=wine,columns = 1:6,groupColumn = 12, order="anyClass")
+parcoord16.wine
+# This Parallel Coordinate Plot does not show any clear
+#trends, so a different exploratory method might be preferable.
+
+
+#More Reasonable Pairwise Plots
+ggpairs(wine,mapping=aes(color=quality),columns=1:4)
+#This seems to show an increase in quality with an increase in citric acid, while there is a 
+#decrease in quality with an increase in volatile acid.
+ggpairs(wine,mapping=aes(color=quality),columns=8:12)
+#this appears to show a negative trend for density and pH from low to high quality,
+#while there is a positive trend for sulphates and alcohol with respect to quality.
+
+#GGPlots with some factors and their relation to quality.
+ggplot(wine, aes(x=alcohol,y=pH)) + geom_point(aes(colour = factor(quality))) + facet_wrap(~quality)
+#It seems that better quality wines have higher alcohol contents, 
+#however there does not seem to be a strong importance to pH.
+ggplot(wine, aes(x=density,y=sulphates)) + geom_point(aes(colour=factor(quality)))+facet_wrap(~quality)
+#it seems there is a greater variance in sulphate levels in middle quality (5,6) wines.
+#there does not seem to be a strong relationship with density.
+
+
+#Using All Qualities
+
+#creating train and test sets
+
+set.seed(1)
+smp_size <- floor(.75 * nrow(wine)) 
+train_ind <- sample(seq_len(nrow(wine)), size = smp_size)
+
+#train set w/ qualities
+wine.train = wine[train_ind,]
+dim(wine.train)
+
+#train set w/o qualities
+train.set <- subset(wine.train, select = -c(quality))
+dim(train.set)
+
+#test set w/ qualities
+wine.test = wine[-train_ind,]
+dim(wine.test)
+
+#test set w/o qualities
+test.set <- subset(wine.test, select = -c(quality))
+dim(test.set)
+
+
+##LDA - Qualities
+lda.fit<-lda(quality~.,data=wine.train) 
+lda.fit
+lda.pred=predict(lda.fit, wine.train)
+names(lda.pred)
+
+#creating table of LDA scores
+lda.scores=data.table ("Quality"=wine.train$quality, "LDA1"=lda.pred$x[,1],"LDA2"=lda.pred$x[,2])
+
+#plotting LDA scores
+gg1.lda=ggplot(lda.scores, aes(LDA1,fill=Quality))+geom_density(color="Black",alpha=0.5)+xlab("Linear discriminant 1")
+gg2.lda=ggplot(lda.scores, aes(LDA2,fill=Quality))+geom_density(color="Black",alpha=0.5)+xlab("Linear discriminant 2")
+grid.arrange(gg1.lda,gg2.lda,ncol=1,nrow=2,top="Densities of the discriminant scores")
+
+#screeplot LDA scores
+lda.sp=ggplot(lda.scores,aes(LDA1,LDA2,color=Quality))+geom_point(size=3)+geom_vline(xintercept=0)+geom_hline(yintercept=0)
+lda.sp
+
+#predicting test error rate
+lda.pred=predict(lda.fit, wine.train)
+names(lda.pred)
+lda.test.error=mean(lda.pred$class!= wine.train$quality)
+lda.test.error
+
+
+##KNN Classification - Qualities
+#creating train class
+
+train.class <- subset(wine.train, select = c(quality))
+train.cl <- as.vector(unlist(train.class))
+
+#knn on train
+knn.wine <- knn(train.set, test.set, train.cl, k= 1, prob = TRUE)
+summary(knn.wine)
+
+#creating test class
+test.class <- subset(wine.test, select = c(quality))
+test.quality<- test.class$quality
+test.cl <- as.vector(test.quality) 
+table(test.cl, knn.wine)
+
+#knn loop on test
+pred = NULL
+knn.test.error = NULL
+for(i in 1:100){
+  set.seed(1)
+  pred = knn(train=train.set, test = test.set, cl=train.cl, k=i)
+  knn.test.error[i] = mean(test.cl != pred)
+}
+
+#test error rate
+min(knn.test.error)
+u <- which.min(knn.test.error)
+u
+
+
+#Using 3 Factors (High, Medium, Low)
+
+#convert quality to high/medium/low
+
+wine$quality <- as.numeric(wine$quality)
+hml <- cut(wine$quality,3,labels=c('Low','Medium','High'))
+table(wine$quality, hml)
+
+#add HML to dataset and subtract quality
+wine3 = data.table(cbind(wine,hml))
+head(wine3)
+wine3 <- subset(wine3, select = -c(quality))
+head(wine3)
+
+#creating train and test sets
+set.seed(1)
+
+#train set w/ hml
+wine3.train = wine3[train_ind,]
+dim(wine3.train)
+
+#use same train set (w/o hml)
+head(train.set)
+dim(train.set)
+
+#test set w/ hml
+wine3.test = wine3[-train_ind,]
+dim(wine3.test)
+
+#use same test set (w/o hml)
+head(test.set)
+dim(test.set)
+
+
+##LDA - 3 Factors
+lda.fit<-lda(hml~.,data=wine3.train)
+lda.fit
+lda.pred=predict(lda.fit, wine3.train)
+names(lda.pred)
+
+#creating table of LDA scores
+lda.scores=data.table ("Quality"=wine3.train$hml, "LDA1"=lda.pred$x[,1],"LDA2"=lda.pred$x[,2])
+
+#plotting LDA scores
+gg1.lda=ggplot(lda.scores, aes(LDA1,fill=Quality))+geom_density(color="Black",alpha=0.5)+xlab("Linear discriminant 1")
+gg2.lda=ggplot(lda.scores, aes(LDA2,fill=Quality))+geom_density(color="Black",alpha=0.5)+xlab("Linear discriminant 2")
+grid.arrange(gg1.lda,gg2.lda,ncol=1,nrow=2,top="Densities of the discriminant scores")
+
+#screeplot
+lda.sp=ggplot(lda.scores,aes(LDA1,LDA2,color=Quality))+geom_point(size=3)+geom_vline(xintercept=0)+geom_hline(yintercept=0)
+lda.sp
+
+#predicting test error rate
+lda.pred=predict(lda.fit, wine3.test)
+names(lda.pred)
+lda.test.error=mean(lda.pred$class!= wine3.test$hml)
+lda.test.error
+
+
+##KNN Classification - 3 Factors
+#creating train class
+train3.class <- subset(wine3.train, select = c(hml))
+train3.hml <- train3.class$hml
+train3.cl <- as.vector(train3.hml) 
+
+#knn on train
+knn.wine3 <- knn(train.set, test.set, train3.cl, k = 1, prob = TRUE)
+summary(knn.wine3)
+
+#creating test class
+test3.class <- subset(wine3.test, select = c(hml))
+test3.hml <- test3.class$hml
+test3.cl <- factor(test3.hml, levels(test3.hml)[c(3, 1, 2)])
+table(test3.cl, knn.wine3)
+
+#knn loop on test
+pred3 = NULL
+knn3.test.error = NULL
+for(i in 1:10){
+  pred3 = knn(train=train.set, test = test.set, cl= train3.cl,k=i)
+  knn3.test.error[i] = mean(test3.hml != pred3)
+}
+
+#test error rate
+min(knn3.test.error)
+k <- which.min(knn3.test.error)
+k
+
+
+#Using 2 Factors- High, Low
+
+#converting quality to high/low
+wine$quality <- as.numeric(wine$quality)
+hl <- cut(wine$quality, 2, labels=c('Low', 'High'))
+hl
+table(wine$quality, hl)
+
+#add HL to dataset and subtract quality
+wine2 = data.table(cbind(wine,hl))
+head(wine2)
+wine2 <- subset(wine2, select = -c(quality))
+head(wine2)
+
+#creating train and test sets
+set.seed(1)
+
+#train set w/ hml
+wine2.train = wine2[train_ind,]
+dim(wine2.train)
+
+#use same train set (w/o hml)
+head(train.set)
+dim(train.set)
+
+#test set w/ hml
+wine2.test = wine2[-train_ind,]
+dim(wine2.test)
+
+#use same test set (w/o hml)
+head(test.set)
+dim(test.set)
+
+##KNN - 2 Factors  
+#creating train class
+train2.class <- subset(wine2.train, select = c(hl)) 
+train2.hl <- train2.class$hl
+train2.cl <- as.vector(train2.hl) 
+
+#knn on train
+knn.wine2 <- knn(train.set, test.set, train2.cl, k = 1, prob = TRUE)
+summary(knn.wine2)
+
+#creating test class
+test2.class <- subset(wine2.test, select = c(hl))
+test2.hl <- test2.class$hl
+test2.cl <- factor(test2.hl, levels(test2.hl)[c(3:1)])
+table(test2.cl, knn.wine2)
+
+#knn loop on test
+pred2 = NULL
+knn2.test.error = NULL
+for(i in 1:10){
+  pred2 = knn(train=train.set, test = test.set, cl= train2.cl,k=i)
+  knn2.test.error[i] = mean(test2.hl != pred2)
+}
+
+#test error rate
+min(knn2.test.error)
+p <- which.min(knn2.test.error)
+p
+
+
+##Logistic Regression - 2 Factors
+
+glm.fit = glm(hl~., data=wine2.train, family=binomial)
+summary(glm.fit)
+
+#Test Error Rate
+glm.probs <- predict(glm.fit, wine2.test, type="response")
+glm.pred = rep(0,400)
+glm.pred[glm.probs >.5]=1
+glm.pred = factor(glm.pred, levels=c(0,1), labels=c("Low","High"))
+glm.test.error=mean(glm.pred != wine2.test$hl)
+glm.test.error
+table(glm.pred, wine2.test$hl)
+
+
+##Tree - 2 factors
+
+# Default Tree
+wine2.tree = tree(hl~.,data=wine2.train)
+summary(wine2.tree)
+plot(wine2.tree)
+text(wine2.tree)
+
+#Test Error Rate
+wine2.tree.pred=predict(wine2.tree, wine2.test, type="class")
+tree.err = mean(wine2.tree.pred != wine2.test$hl)
+tree.err
+table(test2.hl, wine2.tree.pred) 
+
+#Control Tree
+wine2.control = tree.control(nrow(wine2.train),mincut=3,minsize=6,mindev=0.001)
+wine2.tree.control = tree(hl~.,data=wine2.train,control=wine2.control)
+summary(wine2.tree.control)
+plot(wine2.tree.control)
+text(wine2.tree.control)
+
+#Test Error Rate
+wine2.tree.control.pred=predict(wine2.tree.control,wine2.test,type="class")
+tree.control.err = mean(wine2.tree.control.pred != wine2.test$hl)
+tree.control.err
+table(test2.hl, wine2.tree.control.pred) 
+# Knn
+knn.pre=knn(train.set,test.set,train2.cl,k=1,prob=TRUE)
+knn.p=1-attributes(knn.pre)$prob
+knn.roc <-prediction(knn.p, test2.hl)
+knn.perf <-performance(knn.roc, measure = "tpr", x.measure = "fpr")roc.knn <- data.frame(fpr=unlist(knn.perf@x.values),
+                      tpr=unlist(knn.perf@y.values),
+                      model="GLM")
+# Logistic regressionroc.glm <- data.frame(fpr=unlist(perf.glm@x.values),
+                      tpr=unlist(perf.glm@y.values),
+                      model="GLM")# Default treeroc.tree <- data.frame(fpr=unlist(perf.tree@x.values),
+                      tpr=unlist(perf.tree@y.values),
+                      model="GLM")# Control Tree ROC shit
+roc.data <- data.frame(fpr=unlist(perf.tree2@x.values),
+                      tpr=unlist(perf.tree2@y.values),
+                      model="GLM")
+roc.datacols <- c("controlTree"="#ff0000
+","defaultTree"="#0000ff
+","KNN"="#00ff00
+", "Logistic"="#ffa500
+")
+p <- ggplot(data=roc.data, aes(x=tpr, ymin=0, ymax=fpr)) +
+ geom_line(aes(y=fpr, colour="controlTree"), size = 1.4) +
+ geom_line(data=roc.tree, aes(y=fpr, colour="defaultTree"), size = 1.4) +
+ geom_line(data=roc.knn, aes(y=fpr, colour = "KNN"), size = 1.4) +
+ geom_line(data=roc.glm, aes(y=fpr, colour = "Logistic"), size = 1.4) +
+ geom_ribbon(data=roc.glm, alpha=0.2) +
+ scale_colour_manual(name="Methods",values=cols) +
+ ggtitle(paste0("ROC Curves"))
+p
